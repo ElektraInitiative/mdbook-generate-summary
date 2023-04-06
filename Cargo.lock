@@ -908,7 +908,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mdbook_generate_summary"
+name = "mdbook-generate-summary"
 version = "0.1.0"
 dependencies = [
  "anyhow",

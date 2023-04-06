@@ -1,21 +1,27 @@
+use std::{ffi::OsStr, fs::OpenOptions, io::Write, path::PathBuf, str::FromStr, vec};
+
 use anyhow::Error;
-use mdbook::{preprocess::{Preprocessor, PreprocessorContext}, book::Book};
+use mdbook::{
+    book::{Book, Link, SectionNumber, Summary, SummaryItem},
+    preprocess::{Preprocessor, PreprocessorContext},
+    MDBook,
+};
 
 /// A no-op preprocessor.
-pub struct Nop;
+pub struct GenerateSummary;
 
-impl Nop {
-    pub fn new() -> Nop {
-        Nop
+impl GenerateSummary {
+    pub fn new() -> GenerateSummary {
+        GenerateSummary
     }
 }
 
-impl Preprocessor for Nop {
+impl Preprocessor for GenerateSummary {
     fn name(&self) -> &str {
-        "nop-preprocessor"
+        "generate-summary-preprocessor"
     }
 
-    fn run(&self, ctx: &PreprocessorContext, book: Book) -> Result<Book, Error> {
+    fn run(&self, ctx: &PreprocessorContext, _: Book) -> Result<Book, Error> {
         // In testing we want to tell the preprocessor to blow up by setting a
         // particular config value
         if let Some(nop_cfg) = ctx.config.get_preprocessor(self.name()) {
@@ -24,8 +30,17 @@ impl Preprocessor for Nop {
             }
         }
 
-        // we *are* a no-op preprocessor after all
-        Ok(book)
+        let summary = Summary {
+            title: Option::None,
+            prefix_chapters: vec![],
+            numbered_chapters: generate_chapters(
+                &ctx.root.join(&ctx.config.book.src),
+                &SectionNumber::default(),
+            ),
+            suffix_chapters: vec![],
+        };
+
+        Ok(MDBook::load_with_config_and_summary(&ctx.root, ctx.config.clone(), summary)?.book)
     }
 
     fn supports_renderer(&self, renderer: &str) -> bool {
@@ -33,56 +48,64 @@ impl Preprocessor for Nop {
     }
 }
 
-#[cfg(test)]
-mod test {
-    use super::*;
+fn generate_chapters(path: &PathBuf, section: &SectionNumber) -> Vec<SummaryItem> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .append(true)
+        .create(true)
+        .open("mdbook.log")
+        .unwrap();
+    writeln!(file, "{:?}", path).unwrap();
 
-    #[test]
-    fn nop_preprocessor_run() {
-        let input_json = r##"[
-                {
-                    "root": "/path/to/book",
-                    "config": {
-                        "book": {
-                            "authors": ["AUTHOR"],
-                            "language": "en",
-                            "multilingual": false,
-                            "src": "src",
-                            "title": "TITLE"
-                        },
-                        "preprocessor": {
-                            "nop": {}
-                        }
-                    },
-                    "renderer": "html",
-                    "mdbook_version": "0.4.21"
-                },
-                {
-                    "sections": [
-                        {
-                            "Chapter": {
-                                "name": "Chapter 1",
-                                "content": "# Chapter 1\n",
-                                "number": [1],
-                                "sub_items": [],
-                                "path": "chapter_1.md",
-                                "source_path": "chapter_1.md",
-                                "parent_names": []
-                            }
-                        }
-                    ],
-                    "__non_exhaustive": null
+    std::fs::read_dir(path)
+        .unwrap()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, entry)| {
+            let entry = entry.ok().unwrap();
+            let path = entry.path();
+            let entryname = path.file_name().unwrap().to_str().unwrap().to_owned();
+
+            let mut section = section.clone();
+            section.push((i as u32) + 1);
+
+            if entry.file_type().unwrap().is_file() {
+                // Only use .md files
+                if entry.path().extension()? != OsStr::new("md") {
+                    return None;
                 }
-            ]"##;
-        let input_json = input_json.as_bytes();
+                // README.md files are used by chapter headings
+                if entryname.as_str() == "README.md" {
+                    return None;
+                }
 
-        let (ctx, book) = mdbook::preprocess::CmdPreprocessor::parse_input(input_json).unwrap();
-        let expected_book = book.clone();
-        let result = Nop::new().run(&ctx, book);
-        assert!(result.is_ok());
+                let link = Link {
+                    name: entryname,
+                    location: Some(path.clone()),
+                    nested_items: vec![],
+                    number: Some(section),
+                };
+                return Some(SummaryItem::Link(link));
+            }
 
-        // The nop-preprocessor should not have made any changes to the book content.
-        let actual_book = result.unwrap();
-        assert_eq!(actual_book, expected_book);
-    }
+            if entry.file_type().unwrap().is_dir() {
+                let mut chapter_readme = path.clone();
+                chapter_readme.push(PathBuf::from_str("README.md").unwrap());
+
+                if !chapter_readme.exists() {
+                    panic!("Missing chapter file: {:?}", chapter_readme);
+                }
+
+                let link = Link {
+                    name: entryname,
+                    location: Some(chapter_readme),
+                    nested_items: generate_chapters(&path, &section),
+                    number: Some(section),
+                };
+                return Some(SummaryItem::Link(link));
+            }
+
+            Option::None
+        })
+        .collect()
 }
