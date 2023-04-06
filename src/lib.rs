@@ -1,4 +1,11 @@
-use std::{ffi::OsStr, fs::OpenOptions, io::ErrorKind, path::PathBuf, str::FromStr, vec};
+use std::{
+    ffi::OsStr,
+    fs::File,
+    io::{ErrorKind, Write},
+    path::PathBuf,
+    str::FromStr,
+    vec,
+};
 
 use anyhow::Error;
 use mdbook::{
@@ -49,7 +56,8 @@ impl Preprocessor for GenerateSummary {
         };
 
         // Create empty SUMMARY.md
-        let _ = OpenOptions::new().create(true).open(&path_to_summary);
+        let mut file = File::create(&path_to_summary).unwrap();
+        file.write_all(b"# Summary").unwrap();
 
         Ok(MDBook::load_with_config_and_summary(&ctx.root, ctx.config.clone(), summary)?.book)
     }
@@ -86,14 +94,14 @@ fn generate_chapters(dir_path: &PathBuf, section: &SectionNumber) -> Vec<Summary
         .enumerate()
         .filter_map(|(i, entry)| {
             let path = entry.path();
-            let entryname = path.file_name().unwrap().to_str().unwrap().to_owned();
+            let name = path.file_stem().unwrap().to_str().unwrap().to_owned();
 
             let mut section = section.clone();
             section.push(i as u32);
 
             let (location, nested_items) = if entry.file_type().unwrap().is_file() {
                 // README.md files are used by chapter headings
-                if entryname.as_str() == "README.md" {
+                if name.as_str() == "README" {
                     return None;
                 }
 
@@ -110,7 +118,7 @@ fn generate_chapters(dir_path: &PathBuf, section: &SectionNumber) -> Vec<Summary
             };
 
             let link = Link {
-                name: entryname,
+                name,
                 location: Some(location),
                 nested_items,
                 number: Some(section),
