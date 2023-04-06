@@ -1,7 +1,7 @@
 use std::{
     ffi::OsStr,
     fs::File,
-    io::{BufRead, BufReader, ErrorKind, Write},
+    io::{BufRead, BufReader, Write},
     path::PathBuf,
     str::FromStr,
     vec,
@@ -63,25 +63,13 @@ impl Preprocessor for GenerateSummary {
 
         let book_dir = &ctx.root.join(&ctx.config.book.src);
 
-        // Try to delete SUMMARY.md. Panics if file exists, but could not be deleted
-        let path_to_summary = book_dir.join("SUMMARY.md");
-        if let Err(e) = std::fs::remove_file(&path_to_summary) {
-            if e.kind() != ErrorKind::NotFound {
-                panic!("{}", e);
-            }
-        }
-
         // Create summary using books src directory
         let summary = Summary {
             title: Option::None,
             prefix_chapters: vec![],
-            numbered_chapters: generate_chapters(book_dir, &SectionNumber::default(), &config),
+            numbered_chapters: generate_chapters(book_dir, Option::None, &config),
             suffix_chapters: vec![],
         };
-
-        // Create empty SUMMARY.md
-        let mut file = File::create(&path_to_summary).unwrap();
-        file.write_all(b"# Summary").unwrap();
 
         Ok(MDBook::load_with_config_and_summary(&ctx.root, ctx.config.clone(), summary)?.book)
     }
@@ -91,9 +79,11 @@ impl Preprocessor for GenerateSummary {
     }
 }
 
+/// Create summary items out of the provided directory. If the section is `None` it means we are in
+/// the src dir.
 fn generate_chapters(
     dir_path: &PathBuf,
-    section: &SectionNumber,
+    section: Option<&SectionNumber>,
     config: &Config,
 ) -> Vec<SummaryItem> {
     let mut entries = get_markdown_files_and_directories(dir_path);
@@ -103,30 +93,37 @@ fn generate_chapters(
 
     entries
         .into_iter()
-        .enumerate()
-        .filter_map(|(i, entry)| {
+        .map(|entry| {
             let path = entry.path();
             let name = path.file_stem().unwrap().to_str().unwrap().to_owned();
+            (entry, name)
+        })
+        .filter(|(entry, name)| {
+            if section.is_none() && name == "SUMMARY" {
+                // Do not keep 'SUMMARY.md' when in src file as we are the ones generating it
+                return false;
+            }
+            entry.file_type().unwrap().is_dir() || name != &config.chapter_file_name
+        })
+        .enumerate()
+        .map(|(i, (entry, name))| {
+            let mut section = section.cloned().unwrap_or_default();
+            section.push((i + 1) as u32);
 
-            let mut section = section.clone();
-            section.push(i as u32);
-
+            let path = entry.path();
             let link = if entry.file_type().unwrap().is_file() {
-                if name.as_str() == config.chapter_file_name {
-                    return None;
-                }
-                summary_item_from_file(path, name, config, section)
+                summary_item_for_file(path, name, config, section)
             } else {
-                get_summary_item_from_directory(path, name, config, section)
+                summary_item_for_directory(path, name, config, section)
             };
 
-            Some(SummaryItem::Link(link))
+            SummaryItem::Link(link)
         })
         .collect()
 }
 
 /// Creates a summary item for the file.
-fn summary_item_from_file(
+fn summary_item_for_file(
     path: PathBuf,
     name: String,
     config: &Config,
@@ -145,7 +142,7 @@ fn summary_item_from_file(
 }
 
 /// Creates a summary item for the directory. Use the [`config.chapter_file_name`] as content.
-fn get_summary_item_from_directory(
+fn summary_item_for_directory(
     path: PathBuf,
     name: String,
     config: &Config,
@@ -166,15 +163,12 @@ fn get_summary_item_from_directory(
     Link {
         name,
         location: Some(chapter_readme),
-        nested_items: generate_chapters(&path, &section, config),
+        nested_items: generate_chapters(&path, Some(&section), config),
         number: Some(section),
     }
 }
 
 /// Get all markdown files and directories in the specified directory. Ignore all other files.
-///
-/// # Panics
-/// If [`std::fs::read_dir`] fails.
 fn get_markdown_files_and_directories(dir_path: &PathBuf) -> Vec<std::fs::DirEntry> {
     std::fs::read_dir(dir_path)
         .unwrap()
