@@ -1,0 +1,12 @@
+[package]
+name = "mdbook_generate_summary"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = "4.2.1"
+mdbook = "0.4.28"
+anyhow = "1.0.70"
+serde = "1.0.159"
+serde_json = "1.0.95"
+semver = "1.0.17"
