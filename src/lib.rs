@@ -112,46 +112,63 @@ fn generate_chapters(
             section.push(i as u32);
 
             let link = if entry.file_type().unwrap().is_file() {
-                // files are used by chapter headings
                 if name.as_str() == config.chapter_file_name {
                     return None;
                 }
-
-                Link {
-                    name: if config.get_chapter_name_from_file {
-                        get_chapter_name_from_file(&path)
-                    } else {
-                        name
-                    },
-                    location: Some(path),
-                    nested_items: vec![],
-                    number: Some(section),
-                }
+                summary_item_from_file(path, name, config, section)
             } else {
-                let mut chapter_readme = path.clone();
-                chapter_readme
-                    .push(PathBuf::from_str(&format!("{}.md", config.chapter_file_name)).unwrap());
-
-                if !chapter_readme.exists() {
-                    if config.create_missing_chapter_files {
-                        let mut file = File::create(&chapter_readme).unwrap();
-                        write!(file, "# {}.md", config.chapter_file_name).unwrap();
-                    } else {
-                        panic!("Missing chapter file: {:?}", chapter_readme);
-                    }
-                }
-
-                Link {
-                    name,
-                    location: Some(chapter_readme),
-                    nested_items: generate_chapters(&path, &section, config),
-                    number: Some(section),
-                }
+                get_summary_item_from_directory(path, name, config, section)
             };
 
             Some(SummaryItem::Link(link))
         })
         .collect()
+}
+
+/// Creates a summary item for the file.
+fn summary_item_from_file(
+    path: PathBuf,
+    name: String,
+    config: &Config,
+    section: SectionNumber,
+) -> Link {
+    Link {
+        name: if config.get_chapter_name_from_file {
+            get_chapter_name_from_file(&path)
+        } else {
+            name
+        },
+        location: Some(path),
+        nested_items: vec![],
+        number: Some(section),
+    }
+}
+
+/// Creates a summary item for the directory. Use the [`config.chapter_file_name`] as content.
+fn get_summary_item_from_directory(
+    path: PathBuf,
+    name: String,
+    config: &Config,
+    section: SectionNumber,
+) -> Link {
+    let mut chapter_readme = path.clone();
+    chapter_readme.push(PathBuf::from_str(&format!("{}.md", config.chapter_file_name)).unwrap());
+
+    if !chapter_readme.exists() {
+        if config.create_missing_chapter_files {
+            let mut file = File::create(&chapter_readme).unwrap();
+            write!(file, "# {}.md", config.chapter_file_name).unwrap();
+        } else {
+            panic!("Missing chapter file: {:?}", chapter_readme);
+        }
+    }
+
+    Link {
+        name,
+        location: Some(chapter_readme),
+        nested_items: generate_chapters(&path, &section, config),
+        number: Some(section),
+    }
 }
 
 /// Get all markdown files and directories in the specified directory. Ignore all other files.
@@ -187,9 +204,8 @@ fn get_chapter_name_from_file(path: &PathBuf) -> String {
     let mut page_name = String::new();
     reader.read_line(&mut page_name).unwrap();
 
-    if let Some(stripped) = page_name.strip_prefix("# ") {
-        stripped.to_owned()
-    } else {
-        page_name
+    match page_name.strip_prefix("# ") {
+        Some(stripped) => stripped.to_owned(),
+        None => page_name,
     }
 }
