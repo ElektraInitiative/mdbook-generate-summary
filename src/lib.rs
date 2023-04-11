@@ -2,7 +2,7 @@ use std::{
     ffi::OsStr,
     fs::File,
     io::{BufRead, BufReader, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
     vec,
 };
@@ -26,6 +26,10 @@ struct Config {
     /// When false the preprocessor panics if the file is <chapter_file_name>.md is missing in a
     /// directory.
     create_missing_chapter_files: bool,
+    /// If a create_missing_chapter_files is false, but the file is missing the implementations
+    /// panics by default.
+    /// Set this to true to instead use ignore the missing file.
+    ignore_missing_chapter_files: bool,
 }
 
 impl From<&toml::map::Map<String, toml::value::Value>> for Config {
@@ -39,6 +43,9 @@ impl From<&toml::map::Map<String, toml::value::Value>> for Config {
                 .map_or("README".to_owned(), |val| val.as_str().unwrap().to_owned()),
             create_missing_chapter_files: value
                 .get("create_missing_chapter_files")
+                .map_or(false, |val| val.as_bool().unwrap()),
+            ignore_missing_chapter_files: value
+                .get("ignore_missing_chapter_files")
                 .map_or(false, |val| val.as_bool().unwrap()),
         }
     }
@@ -95,77 +102,63 @@ fn generate_chapters(
         .into_iter()
         .map(|entry| {
             let path = entry.path();
-            let name = path.file_stem().unwrap().to_str().unwrap().to_owned();
-            (entry, name)
+            let filename = path.file_stem().unwrap().to_str().unwrap().to_owned();
+            (entry, filename)
         })
-        .filter(|(entry, name)| {
-            if section.is_none() && name == "SUMMARY" {
+        .filter(|(entry, filename)| {
+            if section.is_none() && filename == "SUMMARY" {
                 // Do not keep 'SUMMARY.md' when in src file as we are the ones generating it
                 return false;
             }
-            entry.file_type().unwrap().is_dir() || name != &config.chapter_file_name
+            entry.file_type().unwrap().is_dir() || filename != &config.chapter_file_name
         })
         .enumerate()
-        .map(|(i, (entry, name))| {
+        .map(|(i, (entry, filename))| {
             let mut section = section.cloned().unwrap_or_default();
             section.push((i + 1) as u32);
 
             let path = entry.path();
-            let link = if entry.file_type().unwrap().is_file() {
-                summary_item_for_file(path, name, config, section)
+            let (path_to_chapter_content, nested_items) = if entry.file_type().unwrap().is_file() {
+                (Some(path), vec![])
             } else {
-                summary_item_for_directory(path, name, config, section)
+                (
+                    get_path_to_directory_content(&path, config),
+                    generate_chapters(&path, Some(&section), config),
+                )
             };
 
+            let link = Link {
+                name: get_chapter_name(&path_to_chapter_content, config, filename),
+                location: path_to_chapter_content,
+                nested_items,
+                number: Some(section),
+            };
             SummaryItem::Link(link)
         })
         .collect()
 }
 
-/// Creates a summary item for the file.
-fn summary_item_for_file(
-    path: PathBuf,
-    name: String,
-    config: &Config,
-    section: SectionNumber,
-) -> Link {
-    Link {
-        name: if config.get_chapter_name_from_file {
-            get_chapter_name_from_file(&path)
-        } else {
-            name
-        },
-        location: Some(path),
-        nested_items: vec![],
-        number: Some(section),
-    }
-}
+/// Build the path to the file to be used as the directory's content.
+/// If `config.create_missing_chapter_files` is true and the chapter file is missing create it.
+/// If `config.ignore_missing_chapter_files` is true and the chapter file is missing return [`Option::None`].
+///
+/// # Panics
+/// If the content file is missing and both `config.create_missing_chapter_files` and `config.ignore_missing_chapter_files` are false.
+fn get_path_to_directory_content(path: &Path, config: &Config) -> Option<PathBuf> {
+    let mut chapter_content = path.to_path_buf();
+    chapter_content.push(PathBuf::from_str(&format!("{}.md", config.chapter_file_name)).unwrap());
 
-/// Creates a summary item for the directory. Use the [`config.chapter_file_name`] as content.
-fn summary_item_for_directory(
-    path: PathBuf,
-    name: String,
-    config: &Config,
-    section: SectionNumber,
-) -> Link {
-    let mut chapter_readme = path.clone();
-    chapter_readme.push(PathBuf::from_str(&format!("{}.md", config.chapter_file_name)).unwrap());
-
-    if !chapter_readme.exists() {
+    if !chapter_content.exists() {
         if config.create_missing_chapter_files {
-            let mut file = File::create(&chapter_readme).unwrap();
+            let mut file = File::create(&chapter_content).unwrap();
             write!(file, "# {}.md", config.chapter_file_name).unwrap();
+        } else if config.ignore_missing_chapter_files {
+            return None;
         } else {
-            panic!("Missing chapter file: {:?}", chapter_readme);
+            panic!("Missing chapter file: {:?}", chapter_content);
         }
     }
-
-    Link {
-        name,
-        location: Some(chapter_readme),
-        nested_items: generate_chapters(&path, Some(&section), config),
-        number: Some(section),
-    }
+    Some(chapter_content)
 }
 
 /// Get all markdown files and directories in the specified directory. Ignore all other files.
@@ -189,17 +182,21 @@ fn get_markdown_files_and_directories(dir_path: &PathBuf) -> Vec<std::fs::DirEnt
         .collect()
 }
 
-/// If the first line of the file looks like '# <header>' use the header as the chapter name.
-/// Otherwise use the filename.
-fn get_chapter_name_from_file(path: &PathBuf) -> String {
-    let file = File::open(path).unwrap();
-    let mut reader = BufReader::new(file);
+/// If the chapter file exists, `config.get_chapter_name_from_file` is true and the first line of the file looks like '# <header>' use header as the chapter name.
+/// Otherwise return the filename.
+fn get_chapter_name(path: &Option<PathBuf>, config: &Config, filename: String) -> String {
+    match path {
+        Some(ref path) if config.get_chapter_name_from_file => {
+            let file = File::open(path).unwrap();
+            let mut reader = BufReader::new(file);
 
-    let mut page_name = String::new();
-    reader.read_line(&mut page_name).unwrap();
+            let mut first_line = String::new();
+            reader.read_line(&mut first_line).unwrap();
 
-    match page_name.strip_prefix("# ") {
-        Some(stripped) => stripped.to_owned(),
-        None => page_name,
+            first_line
+                .strip_prefix("# ")
+                .map_or(filename, str::to_owned)
+        }
+        _ => filename,
     }
 }
