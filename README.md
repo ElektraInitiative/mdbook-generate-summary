@@ -4,7 +4,7 @@ A [preprocessor](https://rust-lang.github.io/mdBook/for_developers/preprocessors
 ## Setup
 To install run:
 ```
-cargo install --git https://github.com/kitzbergerg/mdbook-generate-summary mdbook-generate-summary
+cargo install --git https://github.com/ElektraInitiative/mdbook-generate-summary mdbook-generate-summary
 ```
 
 Add the following to the end of your book.toml:
